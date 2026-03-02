@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { autocompleteCities, getPlaceLocation, type PlaceSuggestion } from '@/lib/googleMaps';
+import { loadPlaces } from '@/lib/googleMaps';
 import { cn } from '@/lib/utils';
 import { MapPin, Loader2 } from 'lucide-react';
 
@@ -17,17 +17,31 @@ interface CityAutocompleteProps {
   className?: string;
 }
 
+interface Suggestion {
+  description: string;
+  placeId: string;
+}
+
 export default function CityAutocomplete({ value, onChange, placeholder, className }: CityAutocompleteProps) {
   const [input, setInput] = useState(value);
-  const [suggestions, setSuggestions] = useState<PlaceSuggestion[]>([]);
+  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
+  const autocompleteRef = useRef<google.maps.places.AutocompleteService | null>(null);
+  const geocoderRef = useRef<google.maps.Geocoder | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
 
   useEffect(() => {
     setInput(value);
   }, [value]);
+
+  useEffect(() => {
+    loadPlaces().then(() => {
+      autocompleteRef.current = new google.maps.places.AutocompleteService();
+      geocoderRef.current = new google.maps.Geocoder();
+    }).catch(() => {});
+  }, []);
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -39,21 +53,33 @@ export default function CityAutocomplete({ value, onChange, placeholder, classNa
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const fetchSuggestions = useCallback(async (text: string) => {
-    if (text.length < 2) {
+  const fetchSuggestions = useCallback((text: string) => {
+    if (!autocompleteRef.current || text.length < 2) {
       setSuggestions([]);
       return;
     }
     setLoading(true);
-    try {
-      const results = await autocompleteCities(text);
-      setSuggestions(results);
-      if (results.length > 0) setOpen(true);
-    } catch {
-      setSuggestions([]);
-    } finally {
-      setLoading(false);
-    }
+    autocompleteRef.current.getPlacePredictions(
+      {
+        input: text,
+        componentRestrictions: { country: 'br' },
+        types: ['(cities)'],
+        language: 'pt-BR',
+      },
+      (predictions, status) => {
+        setLoading(false);
+        if (status !== google.maps.places.PlacesServiceStatus.OK || !predictions) {
+          setSuggestions([]);
+          return;
+        }
+        setSuggestions(
+          predictions.map(p => ({
+            description: p.description,
+            placeId: p.place_id,
+          })),
+        );
+      },
+    );
   }, []);
 
   const handleInputChange = (text: string) => {
@@ -64,17 +90,31 @@ export default function CityAutocomplete({ value, onChange, placeholder, classNa
     debounceRef.current = setTimeout(() => fetchSuggestions(text), 300);
   };
 
-  const handleSelect = async (suggestion: PlaceSuggestion) => {
+  const handleSelect = async (suggestion: Suggestion) => {
     setInput(suggestion.description);
     setSuggestions([]);
     setOpen(false);
 
-    const loc = await getPlaceLocation(suggestion.placeId);
+    if (geocoderRef.current) {
+      try {
+        const result = await geocoderRef.current.geocode({ placeId: suggestion.placeId });
+        const loc = result.results[0]?.geometry?.location;
+        if (loc) {
+          onChange({
+            description: suggestion.description,
+            placeId: suggestion.placeId,
+            lat: loc.lat(),
+            lng: loc.lng(),
+          });
+          return;
+        }
+      } catch {}
+    }
     onChange({
       description: suggestion.description,
       placeId: suggestion.placeId,
-      lat: loc?.lat ?? 0,
-      lng: loc?.lng ?? 0,
+      lat: 0,
+      lng: 0,
     });
   };
 
