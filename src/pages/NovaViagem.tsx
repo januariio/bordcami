@@ -239,6 +239,11 @@ export default function NovaViagem() {
                     <div className="min-w-0 flex-1">
                       <p className="font-medium text-foreground truncate">{station.name}</p>
                       <p className="text-xs text-muted-foreground truncate">{station.address}</p>
+                      {station.fuelPrices && station.fuelPrices.length > 0 && (
+                        <p className="text-xs font-semibold text-primary mt-0.5">
+                          Diesel: {station.fuelPrices[0].price}
+                        </p>
+                      )}
                     </div>
                     {station.rating && (
                       <span className="flex items-center gap-0.5 text-xs text-amber-500 shrink-0">

@@ -1,25 +1,58 @@
-import { Loader } from '@googlemaps/js-api-loader';
+const API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY as string;
 
-let loaderInstance: Loader | null = null;
-
-function getLoader(): Loader {
-  if (!loaderInstance) {
-    const key = import.meta.env.VITE_GOOGLE_MAPS_API_KEY as string;
-    if (!key) throw new Error('VITE_GOOGLE_MAPS_API_KEY não definida');
-    loaderInstance = new Loader({ apiKey: key, libraries: ['places'], language: 'pt-BR', region: 'BR' });
-  }
-  return loaderInstance;
+export interface PlaceSuggestion {
+  description: string;
+  placeId: string;
 }
 
-export async function loadPlaces(): Promise<typeof google.maps.places> {
-  const loader = getLoader();
-  return loader.importLibrary('places');
+export async function autocompleteCities(input: string): Promise<PlaceSuggestion[]> {
+  if (!API_KEY || input.length < 2) return [];
+
+  const res = await fetch('https://places.googleapis.com/v1/places:autocomplete', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Goog-Api-Key': API_KEY,
+    },
+    body: JSON.stringify({
+      input,
+      includedRegionCodes: ['br'],
+      languageCode: 'pt-BR',
+      includedPrimaryTypes: ['locality'],
+    }),
+  });
+
+  if (!res.ok) return [];
+  const data = await res.json();
+
+  return (data.suggestions ?? [])
+    .filter((s: any) => s.placePrediction)
+    .map((s: any) => ({
+      description: s.placePrediction.text.text as string,
+      placeId: s.placePrediction.placeId as string,
+    }));
 }
 
-export async function loadCore(): Promise<typeof google.maps> {
-  const loader = getLoader();
-  await loader.importLibrary('core');
-  return google.maps;
+export interface PlaceLocation {
+  lat: number;
+  lng: number;
+}
+
+export async function getPlaceLocation(placeId: string): Promise<PlaceLocation | null> {
+  if (!API_KEY) return null;
+
+  const res = await fetch(`https://places.googleapis.com/v1/places/${placeId}`, {
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Goog-Api-Key': API_KEY,
+      'X-Goog-FieldMask': 'location',
+    },
+  });
+
+  if (!res.ok) return null;
+  const data = await res.json();
+  if (!data.location) return null;
+  return { lat: data.location.latitude, lng: data.location.longitude };
 }
 
 export interface DistanceResult {
@@ -28,33 +61,35 @@ export interface DistanceResult {
 }
 
 export async function getDistance(originPlaceId: string, destPlaceId: string): Promise<DistanceResult> {
-  await loadCore();
-  return new Promise((resolve, reject) => {
-    const service = new google.maps.DistanceMatrixService();
-    service.getDistanceMatrix(
-      {
-        origins: [{ placeId: originPlaceId }],
-        destinations: [{ placeId: destPlaceId }],
-        travelMode: google.maps.TravelMode.DRIVING,
-        unitSystem: google.maps.UnitSystem.METRIC,
-      },
-      (response, status) => {
-        if (status !== 'OK' || !response) {
-          reject(new Error(`Distance Matrix falhou: ${status}`));
-          return;
-        }
-        const element = response.rows[0]?.elements[0];
-        if (!element || element.status !== 'OK') {
-          reject(new Error('Rota não encontrada'));
-          return;
-        }
-        resolve({
-          distanceKm: Math.round(element.distance.value / 1000),
-          durationText: element.duration.text,
-        });
-      },
-    );
+  if (!API_KEY) throw new Error('API key ausente');
+
+  const res = await fetch('https://routes.googleapis.com/directions/v2:computeRoutes', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Goog-Api-Key': API_KEY,
+      'X-Goog-FieldMask': 'routes.distanceMeters,routes.duration',
+    },
+    body: JSON.stringify({
+      origin: { placeId: originPlaceId },
+      destination: { placeId: destPlaceId },
+      travelMode: 'DRIVE',
+    }),
   });
+
+  if (!res.ok) throw new Error('Routes API falhou');
+  const data = await res.json();
+
+  const route = data.routes?.[0];
+  if (!route) throw new Error('Rota não encontrada');
+
+  const distanceKm = Math.round(route.distanceMeters / 1000);
+  const totalSeconds = parseInt(route.duration?.replace('s', '') ?? '0', 10);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const durationText = hours > 0 ? `${hours}h ${minutes}min` : `${minutes}min`;
+
+  return { distanceKm, durationText };
 }
 
 export interface GasStation {
@@ -62,43 +97,53 @@ export interface GasStation {
   address: string;
   rating?: number;
   placeId: string;
-  location: { lat: number; lng: number };
+  fuelPrices?: { type: string; price: string }[];
 }
 
 export async function findGasStations(lat: number, lng: number, radius = 15000): Promise<GasStation[]> {
-  await loadCore();
-  await loadPlaces();
+  if (!API_KEY) return [];
 
-  const container = document.createElement('div');
-  const service = new google.maps.places.PlacesService(container);
-
-  return new Promise((resolve, reject) => {
-    service.nearbySearch(
-      {
-        location: new google.maps.LatLng(lat, lng),
-        radius,
-        type: 'gas_station',
-        keyword: 'diesel',
+  const res = await fetch('https://places.googleapis.com/v1/places:searchNearby', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Goog-Api-Key': API_KEY,
+      'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.rating,places.id,places.fuelOptions,places.location',
+    },
+    body: JSON.stringify({
+      includedTypes: ['gas_station'],
+      maxResultCount: 10,
+      languageCode: 'pt-BR',
+      locationRestriction: {
+        circle: {
+          center: { latitude: lat, longitude: lng },
+          radius,
+        },
       },
-      (results, status) => {
-        if (status !== google.maps.places.PlacesServiceStatus.OK || !results) {
-          resolve([]);
-          return;
+    }),
+  });
+
+  if (!res.ok) return [];
+  const data = await res.json();
+
+  return (data.places ?? []).map((p: any) => {
+    const fuelPrices: { type: string; price: string }[] = [];
+    if (p.fuelOptions?.fuelPrices) {
+      for (const fp of p.fuelOptions.fuelPrices) {
+        if (fp.type?.toLowerCase().includes('diesel') || fp.type === 'DIESEL') {
+          const price = fp.price?.units
+            ? `R$ ${fp.price.units},${String(fp.price.nanos ?? 0).slice(0, 2).padEnd(2, '0')}`
+            : '';
+          fuelPrices.push({ type: fp.type, price });
         }
-        const stations: GasStation[] = results
-          .slice(0, 10)
-          .map(r => ({
-            name: r.name ?? 'Posto',
-            address: r.vicinity ?? '',
-            rating: r.rating,
-            placeId: r.place_id ?? '',
-            location: {
-              lat: r.geometry?.location?.lat() ?? lat,
-              lng: r.geometry?.location?.lng() ?? lng,
-            },
-          }));
-        resolve(stations);
-      },
-    );
+      }
+    }
+    return {
+      name: p.displayName?.text ?? 'Posto',
+      address: p.formattedAddress ?? '',
+      rating: p.rating,
+      placeId: p.id ?? '',
+      fuelPrices: fuelPrices.length > 0 ? fuelPrices : undefined,
+    };
   });
 }
