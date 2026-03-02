@@ -5,26 +5,33 @@ import { formatCurrency } from '@/utils/calculadora';
 import StatCard from '@/components/StatCard';
 import { Truck, PlusCircle, Fuel, History, BarChart3, MapPin, LogOut } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
+
+const PERIOD_OPTIONS = [
+  { label: '7 Dias', days: 7 },
+  { label: '15 Dias', days: 15 },
+  { label: '30 Dias', days: 30 },
+] as const;
 
 export default function Dashboard() {
   const navigate = useNavigate();
   const { profile: localProfile, viagens, despesas } = useAppStore();
   const { profile: authProfile, signOut } = useAuth();
   const profile = authProfile ?? localProfile;
+  const [periodDays, setPeriodDays] = useState<number>(30);
 
   const viagemAtiva = viagens.find(v => v.status === 'ativa');
 
   const stats = useMemo(() => {
     const now = new Date();
-    const dias30 = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-    const recentes = viagens.filter(v => v.status === 'encerrada' && new Date(v.created_at) >= dias30);
+    const cutoff = new Date(now.getTime() - periodDays * 24 * 60 * 60 * 1000);
+    const recentes = viagens.filter(v => v.status === 'encerrada' && new Date(v.created_at) >= cutoff);
     const totalFretes = recentes.reduce((s, v) => s + v.valor_frete, 0);
     const despesasRecentes = despesas.filter(d => recentes.some(v => v.id === d.viagem_id));
     const totalDespesas = despesasRecentes.reduce((s, d) => s + d.valor, 0);
-    const lucro = totalFretes - totalDespesas;
-    return { totalFretes, totalDespesas, lucro, qtdViagens: recentes.length };
-  }, [viagens, despesas]);
+    const faturado = totalFretes - totalDespesas;
+    return { totalFretes, totalDespesas, faturado, qtdViagens: recentes.length };
+  }, [viagens, despesas, periodDays]);
 
   return (
     <div className="space-y-6 animate-slide-up">
@@ -67,15 +74,32 @@ export default function Dashboard() {
         </button>
       )}
 
-      {/* Stats últimos 30 dias */}
+      {/* Seletor de período + Stats */}
       <div>
-        <h2 className="mb-3 text-sm font-semibold text-muted-foreground uppercase tracking-wider">
-          Últimos 30 dias
-        </h2>
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
+            Últimos {periodDays} dias
+          </h2>
+          <div className="flex rounded-lg border border-border overflow-hidden">
+            {PERIOD_OPTIONS.map(opt => (
+              <button
+                key={opt.days}
+                onClick={() => setPeriodDays(opt.days)}
+                className={`px-3 py-1.5 text-xs font-medium transition-colors ${
+                  periodDays === opt.days
+                    ? 'bg-primary text-primary-foreground'
+                    : 'bg-card text-muted-foreground hover:bg-secondary'
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </div>
         <div className="grid grid-cols-2 gap-3">
-          <StatCard label="Fretes" value={formatCurrency(stats.totalFretes)} />
+          <StatCard label="Valor total de Fretes" value={formatCurrency(stats.totalFretes)} />
           <StatCard label="Despesas" value={formatCurrency(stats.totalDespesas)} variant="destructive" />
-          <StatCard label="Lucro" value={formatCurrency(stats.lucro)} variant={stats.lucro >= 0 ? 'success' : 'destructive'} />
+          <StatCard label="Faturado" value={formatCurrency(stats.faturado)} variant={stats.faturado >= 0 ? 'success' : 'destructive'} />
           <StatCard label="Viagens" value={String(stats.qtdViagens)} />
         </div>
       </div>
